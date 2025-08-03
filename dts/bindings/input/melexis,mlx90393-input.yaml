@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: MIT
+
+description: |
+  MLX90393 magnetic sensor input driver
+
+  This driver reads magnetic field data from the MLX90393 sensor via I2C
+  and generates mouse input events. It supports two states based on Z-axis
+  threshold detection: normal and pressed modes with different behavior bindings.
+
+  Example usage:
+    mlx90393_input: mlx90393-input {
+      compatible = "melexis,mlx90393-input";
+      reg = <0x0C>;
+      polling-interval-ms = <10>;
+      z-press-threshold = <50>;
+      z-hysteresis = <10>;
+      normal-binding = <&mkp LCLK>;
+      pressed-binding = <&mkp MCLK>;
+    };
+
+compatible: "melexis,mlx90393-input"
+
+include: [base.yaml, i2c-device.yaml]
+
+properties:
+  polling-interval-ms:
+    type: int
+    default: 10
+    description: |
+      Sensor reading interval in milliseconds.
+      Affects responsiveness vs power consumption.
+
+  z-press-threshold:
+    type: int
+    default: 50
+    description: |
+      Z-axis threshold value for press detection.
+      Values above this threshold trigger pressed state.
+
+  z-hysteresis:
+    type: int
+    default: 10
+    description: |
+      Z-axis hysteresis value to prevent state oscillation.
+      Press state is released when Z falls below (threshold - hysteresis).
+
+  normal-binding:
+    type: phandle
+    required: true
+    description: |
+      Behavior binding for normal state.
+      Typically used for middle button + movement.
+
+  pressed-binding:
+    type: phandle
+    required: true
+    description: |
+      Behavior binding for pressed state.
+      Typically used for SHIFT + middle button + movement.
+
+  deadzone-x:
+    type: int
+    default: 3
+    description: X-axis deadzone to filter small movements.
+
+  deadzone-y:
+    type: int
+    default: 3
+    description: Y-axis deadzone to filter small movements.
+
+  deadzone-z:
+    type: int
+    default: 5
+    description: Z-axis deadzone to filter small movements.
+
+  movement-threshold:
+    type: int
+    default: 20
+    description: |
+      Movement detection threshold for auto-calibration.
+      Movement below this value is considered stationary.
+
+  auto-calibration-timeout-s:
+    type: int
+    default: 30
+    description: |
+      Auto-calibration timeout in seconds.
+      Calibration occurs after this period of no movement.

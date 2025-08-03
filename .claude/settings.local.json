@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__serena__onboarding",
+      "mcp__serena__list_dir",
+      "mcp__serena__write_memory",
+      "mcp__serena__check_onboarding_performed",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(npx mcp-remote:*)",
+      "WebFetch(domain:zmk.dev)",
+      "WebFetch(domain:docs.zephyrproject.org)",
+      "mcp__serena__activate_project",
+      "WebFetch(domain:github.com)",
+      "Bash(export ZMK_CONFIG=zmk-config-MKB2)",
+      "Bash(just init:*)",
+      "Bash(ls:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "serena",
+    "deepwiki"
+  ]
+}

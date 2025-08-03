@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+
+config ZMK_INPUT_MLX90393
+	bool "MLX90393 magnetic sensor input driver"
+	default n
+	depends on DT_HAS_MELEXIS_MLX90393_ENABLED
+	depends on I2C
+	select SENSOR
+	select INPUT
+	help
+	  Enable driver for MLX90393 magnetic sensor input.
+	  This driver reads magnetic field data from the MLX90393 sensor
+	  and generates mouse input events based on Z-axis threshold detection.
+
+if ZMK_INPUT_MLX90393
+
+config ZMK_INPUT_MLX90393_INIT_PRIORITY
+	int "MLX90393 driver initialization priority"
+	default 80
+	help
+	  Initialization priority for MLX90393 driver.
+
+config ZMK_INPUT_MLX90393_LOG_LEVEL
+	int "MLX90393 driver log level"
+	default 3
+	range 0 4
+	help
+	  Log level for MLX90393 driver.
+	  0 = OFF, 1 = ERROR, 2 = WARNING, 3 = INFO, 4 = DEBUG
+
+endif # ZMK_INPUT_MLX90393
