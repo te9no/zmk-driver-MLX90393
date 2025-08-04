@@ -14,7 +14,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
-#include <drivers/behavior.h>
+
 
 LOG_MODULE_REGISTER(input_mlx90393, CONFIG_ZMK_INPUT_MLX90393_LOG_LEVEL);
 
@@ -56,8 +56,6 @@ struct mlx90393_config {
     int32_t deadzone_z;
     int32_t movement_threshold;
     uint32_t auto_calibration_timeout_s;
-    const struct device *normal_binding;
-    const struct device *pressed_binding;
 };
 
 struct mlx90393_data {
@@ -146,7 +144,7 @@ static void mlx90393_calibration_timeout(struct k_timer *timer) {
 static void mlx90393_work_handler(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     struct mlx90393_data *data = CONTAINER_OF(dwork, struct mlx90393_data, work);
-    const struct device *dev = CONTAINER_OF(data, struct device, data);
+    const struct device *dev = DEVICE_FROM_DATA(data);
     const struct mlx90393_config *config = dev->config;
     
     int16_t x, y, z;
@@ -211,13 +209,8 @@ static void mlx90393_work_handler(struct k_work *work) {
 
     // Generate input events only if there's movement or state change
     if (movement_detected || new_pressed_state != data->pressed_state) {
-        // Select appropriate behavior binding
-        const struct device *binding = new_pressed_state ? 
-            config->pressed_binding : config->normal_binding;
-
         if (new_pressed_state != data->pressed_state) {
             LOG_DBG("State changed to %s", new_pressed_state ? "pressed" : "normal");
-            data->pressed_state = new_pressed_state;
         }
 
         // Generate relative movement events
@@ -230,11 +223,11 @@ static void mlx90393_work_handler(struct k_work *work) {
         if (rel_z != 0) {
             input_report_rel(dev, INPUT_REL_WHEEL, rel_z, true, K_FOREVER);
         }
-
-        // Trigger behavior binding if configured
-        if (binding != NULL) {
-            behavior_keymap_binding_pressed(binding, (struct zmk_behavior_binding_event){});
-            behavior_keymap_binding_released(binding, (struct zmk_behavior_binding_event){});
+        
+        // Report state change as a key event (e.g., middle button)
+        if (new_pressed_state != data->pressed_state) {
+            input_report_key(dev, INPUT_BTN_MIDDLE, new_pressed_state ? 1 : 0, true, K_FOREVER);
+            data->pressed_state = new_pressed_state;
         }
     }
 
@@ -303,8 +296,6 @@ static int mlx90393_init(const struct device *dev) {
         .deadzone_z = DT_INST_PROP(n, deadzone_z),                                               \
         .movement_threshold = DT_INST_PROP(n, movement_threshold),                               \
         .auto_calibration_timeout_s = DT_INST_PROP(n, auto_calibration_timeout_s),               \
-        .normal_binding = DEVICE_DT_GET_OR_NULL(DT_INST_PROP(n, normal_binding)),                \
-        .pressed_binding = DEVICE_DT_GET_OR_NULL(DT_INST_PROP(n, pressed_binding)),              \
     };                                                                                            \
                                                                                                   \
     static struct mlx90393_data mlx90393_data_##n;                                               \

@@ -14,7 +14,12 @@
       "WebFetch(domain:github.com)",
       "Bash(export ZMK_CONFIG=zmk-config-MKB2)",
       "Bash(just init:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__find_symbol",
+      "mcp__serena__search_for_pattern",
+      "mcp__serena__replace_regex",
+      "mcp__serena__replace_symbol_body"
     ]
   },
   "enableAllProjectMcpServers": true,
