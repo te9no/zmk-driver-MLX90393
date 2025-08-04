@@ -3,8 +3,7 @@
 config ZMK_INPUT_MLX90393
 	bool "MLX90393 magnetic sensor input driver"
 	default n
-	depends on DT_HAS_MELEXIS_MLX90393_INPUT_ENABLED
-	depends on I2C
+	depends on DT_HAS_MELEXIS_MLX90393_ENABLED
 	select SENSOR
 	select INPUT
 	help
