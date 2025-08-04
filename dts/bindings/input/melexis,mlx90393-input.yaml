@@ -71,3 +71,11 @@ properties:
     description: |
       Auto-calibration timeout in seconds.
       Calibration occurs after this period of no movement.
+
+  bindings:
+    type: phandles
+    required: true
+    description: |
+      List of two behavior bindings: [normal-binding, pressed-binding].
+      First binding is for normal state (Z-axis below threshold).
+      Second binding is for pressed state (Z-axis above threshold).
