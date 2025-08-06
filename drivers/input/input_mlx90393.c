@@ -7,12 +7,15 @@
 #define DT_DRV_COMPAT melexis_mlx90393_input
 
 #include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/input/input.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
+#include <zmk/behavior.h>
+#include <zmk/event_manager.h>
 
 
 
@@ -56,11 +59,14 @@ struct mlx90393_config {
     int32_t deadzone_z;
     int32_t movement_threshold;
     uint32_t auto_calibration_timeout_s;
+    struct zmk_behavior_binding normal_binding;
+    struct zmk_behavior_binding pressed_binding;
 };
 
 struct mlx90393_data {
     struct k_work_delayable work;
     struct k_timer calibration_timer;
+    const struct device *dev;
     int16_t baseline_x;
     int16_t baseline_y;
     int16_t baseline_z;
@@ -144,7 +150,7 @@ static void mlx90393_calibration_timeout(struct k_timer *timer) {
 static void mlx90393_work_handler(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     struct mlx90393_data *data = CONTAINER_OF(dwork, struct mlx90393_data, work);
-    const struct device *dev = DEVICE_FROM_DATA(data);
+    const struct device *dev = data->dev;
     const struct mlx90393_config *config = dev->config;
     
     int16_t x, y, z;
@@ -207,13 +213,34 @@ static void mlx90393_work_handler(struct k_work *work) {
         new_pressed_state = false;
     }
 
-    // Generate input events only if there's movement or state change
-    if (movement_detected || new_pressed_state != data->pressed_state) {
-        if (new_pressed_state != data->pressed_state) {
-            LOG_DBG("State changed to %s", new_pressed_state ? "pressed" : "normal");
+    // Handle state change using ZMK behavior bindings
+    if (new_pressed_state != data->pressed_state) {
+        LOG_DBG("State changed to %s", new_pressed_state ? "pressed" : "normal");
+        
+        if (config->normal_binding.behavior_dev != NULL || config->pressed_binding.behavior_dev != NULL) {
+            struct zmk_behavior_binding_event event = {
+                .position = 0,
+                .timestamp = k_uptime_get(),
+            };
+            
+            if (new_pressed_state && config->pressed_binding.behavior_dev != NULL) {
+                // Invoke pressed state binding
+                zmk_behavior_invoke_binding(&config->pressed_binding, event, true);
+            } else if (!new_pressed_state && config->normal_binding.behavior_dev != NULL) {
+                // Release pressed state binding if it was active
+                if (config->pressed_binding.behavior_dev != NULL) {
+                    zmk_behavior_invoke_binding(&config->pressed_binding, event, false);
+                }
+                // Invoke normal state binding
+                zmk_behavior_invoke_binding(&config->normal_binding, event, true);
+            }
         }
-
-        // Generate relative movement events
+        
+        data->pressed_state = new_pressed_state;
+    }
+    
+    // Generate relative movement events as input
+    if (movement_detected) {
         if (rel_x != 0) {
             input_report_rel(dev, INPUT_REL_X, rel_x, true, K_FOREVER);
         }
@@ -222,12 +249,6 @@ static void mlx90393_work_handler(struct k_work *work) {
         }
         if (rel_z != 0) {
             input_report_rel(dev, INPUT_REL_WHEEL, rel_z, true, K_FOREVER);
-        }
-        
-        // Report state change as a key event (e.g., middle button)
-        if (new_pressed_state != data->pressed_state) {
-            input_report_key(dev, INPUT_BTN_MIDDLE, new_pressed_state ? 1 : 0, true, K_FOREVER);
-            data->pressed_state = new_pressed_state;
         }
     }
 
@@ -266,6 +287,7 @@ static int mlx90393_init(const struct device *dev) {
     }
 
     // Initialize data structure
+    data->dev = dev;
     data->calibrated = false;
     data->pressed_state = false;
     data->calibration_samples = 0;
@@ -285,17 +307,20 @@ static int mlx90393_init(const struct device *dev) {
     return 0;
 }
 
+
 #define MLX90393_INST(n)                                                                          \
     static const struct mlx90393_config mlx90393_config_##n = {                                  \
         .i2c = I2C_DT_SPEC_INST_GET(n),                                                          \
-        .polling_interval_ms = DT_INST_PROP(n, polling_interval_ms),                             \
-        .z_press_threshold = DT_INST_PROP(n, z_press_threshold),                                 \
-        .z_hysteresis = DT_INST_PROP(n, z_hysteresis),                                           \
-        .deadzone_x = DT_INST_PROP(n, deadzone_x),                                               \
-        .deadzone_y = DT_INST_PROP(n, deadzone_y),                                               \
-        .deadzone_z = DT_INST_PROP(n, deadzone_z),                                               \
-        .movement_threshold = DT_INST_PROP(n, movement_threshold),                               \
-        .auto_calibration_timeout_s = DT_INST_PROP(n, auto_calibration_timeout_s),               \
+        .polling_interval_ms = DT_INST_PROP_OR(n, polling_interval_ms, 10),                      \
+        .z_press_threshold = DT_INST_PROP_OR(n, z_press_threshold, 50),                        \
+        .z_hysteresis = DT_INST_PROP_OR(n, z_hysteresis, 10),                                  \
+        .deadzone_x = DT_INST_PROP_OR(n, deadzone_x, 3),                                       \
+        .deadzone_y = DT_INST_PROP_OR(n, deadzone_y, 3),                                       \
+        .deadzone_z = DT_INST_PROP_OR(n, deadzone_z, 5),                                       \
+        .movement_threshold = DT_INST_PROP_OR(n, movement_threshold, 20),                       \
+        .auto_calibration_timeout_s = DT_INST_PROP_OR(n, auto_calibration_timeout_s, 30),       \
+        .normal_binding = { .behavior_dev = NULL, .param1 = 0, .param2 = 0 },                   \
+        .pressed_binding = { .behavior_dev = NULL, .param1 = 0, .param2 = 0 }                   \
     };                                                                                            \
                                                                                                   \
     static struct mlx90393_data mlx90393_data_##n;                                               \
