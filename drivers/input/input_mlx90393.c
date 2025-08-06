@@ -17,8 +17,6 @@
 #include <zmk/behavior.h>
 #include <zmk/event_manager.h>
 
-
-
 LOG_MODULE_REGISTER(input_mlx90393, CONFIG_ZMK_INPUT_MLX90393_LOG_LEVEL);
 
 /* MLX90393 I2C commands */
@@ -86,14 +84,17 @@ static int mlx90393_write_cmd(const struct device *dev, uint8_t cmd) {
     uint8_t status;
     int ret;
 
+    // Proper I2C sequence as per datasheet: Write command, then read status
     ret = i2c_write_read_dt(&config->i2c, &cmd, 1, &status, 1);
     if (ret < 0) {
         LOG_ERR("Failed to write command 0x%02x: %d", cmd, ret);
         return ret;
     }
 
+    LOG_DBG("Command 0x%02x status: 0x%02x", cmd, status);
+
     if (status & MLX90393_STATUS_ERROR) {
-        LOG_ERR("MLX90393 error status: 0x%02x", status);
+        LOG_ERR("MLX90393 error status: 0x%02x for command 0x%02x", status, cmd);
         return -EIO;
     }
 
@@ -102,8 +103,9 @@ static int mlx90393_write_cmd(const struct device *dev, uint8_t cmd) {
 
 static int mlx90393_read_measurement(const struct device *dev, int16_t *x, int16_t *y, int16_t *z) {
     const struct mlx90393_config *config = dev->config;
-    uint8_t cmd = MLX90393_CMD_READ_MEASURE;
-    uint8_t data[7];
+    // RM command with XYZT (0x0F = all axes + temperature)
+    uint8_t cmd = MLX90393_CMD_READ_MEASURE | 0x0F;  
+    uint8_t data[9]; // Status + T(2) + X(2) + Y(2) + Z(2) = 9 bytes
     int ret;
 
     ret = i2c_write_read_dt(&config->i2c, &cmd, 1, data, sizeof(data));
@@ -112,20 +114,27 @@ static int mlx90393_read_measurement(const struct device *dev, int16_t *x, int16
         return ret;
     }
 
+    LOG_DBG("Measurement status: 0x%02x", data[0]);
+
     if (data[0] & MLX90393_STATUS_ERROR) {
         LOG_ERR("MLX90393 measurement error: 0x%02x", data[0]);
         return -EIO;
     }
 
-    *x = (int16_t)((data[1] << 8) | data[2]);
-    *y = (int16_t)((data[3] << 8) | data[4]);
-    *z = (int16_t)((data[5] << 8) | data[6]);
+    // Data order: Status, T[15:8], T[7:0], X[15:8], X[7:0], Y[15:8], Y[7:0], Z[15:8], Z[7:0]
+    // Skip temperature (bytes 1,2) and read X, Y, Z
+    *x = (int16_t)((data[3] << 8) | data[4]);
+    *y = (int16_t)((data[5] << 8) | data[6]);
+    *z = (int16_t)((data[7] << 8) | data[8]);
+
+    LOG_DBG("Raw measurements - X:%d Y:%d Z:%d", *x, *y, *z);
 
     return 0;
 }
 
 static int mlx90393_start_measurement(const struct device *dev) {
-    return mlx90393_write_cmd(dev, MLX90393_CMD_START_SINGLE | 0x0E); // X, Y, Z + T
+    // SM command with XYZT (0x0F = z,y,x,t bits set)
+    return mlx90393_write_cmd(dev, MLX90393_CMD_START_SINGLE | 0x0F);
 }
 
 static void mlx90393_calibration_timeout(struct k_timer *timer) {
@@ -161,7 +170,9 @@ static void mlx90393_work_handler(struct k_work *work) {
         goto reschedule;
     }
 
-    k_msleep(2); // Wait for measurement to complete
+    // Wait for measurement to complete (datasheet: TSTBY + TACTIVE + conversion time)
+    // Conservative estimate: ~3ms for typical settings
+    k_msleep(5);
 
     ret = mlx90393_read_measurement(dev, &x, &y, &z);
     if (ret < 0) {
@@ -270,6 +281,14 @@ static int mlx90393_init(const struct device *dev) {
         return -ENODEV;
     }
 
+    // Exit any current mode before reset (as recommended in datasheet)
+    ret = mlx90393_write_cmd(dev, MLX90393_CMD_EXIT);
+    if (ret < 0) {
+        LOG_WRN("Failed to exit mode before reset: %d", ret);
+        // Continue anyway, reset might still work
+    }
+    k_msleep(1); // Wait 1ms as recommended in datasheet
+
     // Reset sensor
     ret = mlx90393_write_cmd(dev, MLX90393_CMD_RESET);
     if (ret < 0) {
@@ -277,7 +296,7 @@ static int mlx90393_init(const struct device *dev) {
         return ret;
     }
 
-    k_msleep(10); // Wait for reset
+    k_msleep(2); // Wait 1.5ms as recommended in datasheet (rounded up)
 
     // Wake up sensor
     ret = mlx90393_write_cmd(dev, MLX90393_CMD_START_WAKEUP);
