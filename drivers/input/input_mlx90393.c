@@ -103,7 +103,8 @@ static int mlx90393_write_cmd(const struct device *dev, uint8_t cmd) {
 
 static int mlx90393_read_measurement(const struct device *dev, int16_t *x, int16_t *y, int16_t *z) {
     const struct mlx90393_config *config = dev->config;
-    // RM command with XYZT (0x0F = all axes + temperature)
+    // RM command with XYZT (0x0F = zyxt bits: z=1,y=1,x=1,t=1)
+    // Data returned in order: Status, T, X, Y, Z
     uint8_t cmd = MLX90393_CMD_READ_MEASURE | 0x0F;  
     uint8_t data[9]; // Status + T(2) + X(2) + Y(2) + Z(2) = 9 bytes
     int ret;
