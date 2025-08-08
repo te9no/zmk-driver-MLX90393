@@ -1,191 +1,170 @@
-# ZMK MLX90393 Magnetic Sensor Input Driver
+# MLX90393 ZMK Input Driver
 
-ZMK (Zephyr Mechanical Keyboard) ファームウェア用のMLX90393磁気センサー入力ドライバーです。
+Arduino互換のMLX90393三軸磁気センサー用ZMK入力ドライバーです。トラックポイント形式のカーソル制御を提供します。
 
 ## 概要
 
-このドライバーは、MLX90393 3軸磁気センサーからデータを読み取り、Z軸の値に基づいて2つの状態（通常/押し込み）を検出し、状態に応じて異なるbehavior bindingを実行します。
+このドライバーは実証済みのArduinoサンプルコードをベースに開発され、MLX90393センサーとの確実なI2C通信を実現します。
 
 ### 主要機能
 
-- **I2C通信**: MLX90393センサーとの通信
-- **2状態検出**: Z軸閾値による通常/押し込み状態の判定
-- **ヒステリシス**: 状態振動を防ぐヒステリシス機能
-- **自動キャリブレーション**: 30秒間無動作後の自動基準点設定
-- **デッドゾーン**: 小さな動きをフィルタリング
-- **Behavior Binding**: 状態に応じた異なるキーマップアクション
+- ✅ **Arduino互換実装** - 動作が実証済みのArduinoコードと同じ通信パターン
+- ✅ **自動キャリブレーション** - 起動時に自動で中心位置を設定（50サンプル/5秒）
+- ✅ **滑らかな動作** - デッドゾーンと感度調整による安定した操作感  
+- ✅ **詳細デバッグログ** - リアルタイムセンサー値監視
+- ✅ **I2Cアドレス検出** - 標準的なMLX90393設定（0x0C）をサポート
+- ✅ **相対座標システム** - ベースラインからの相対変化でスムーズな制御
 
-## インストール
+## ハードウェア要件
 
-### 1. west.ymlに追加
+- MLX90393 三軸磁気センサー
+- プルアップ抵抗有効のI2C接続
+- 標準I2Cアドレス: `0x0C`
 
-```yaml
-manifest:
-  projects:
-    - name: zmk-driver-MLX90393
-      remote: github
-      repo: your-username/zmk-driver-MLX90393
-      revision: v1
-      path: modules/zmk-driver-MLX90393
-```
+## 設定方法
 
-### 2. ボード設定での有効化
-
-`<board>.conf`ファイルで有効化：
-
-```ini
-CONFIG_ZMK_INPUT_MLX90393=y
-```
-
-### 3. デバイスツリー設定
-
-キーマップファイル（`.keymap`）で設定：
+デバイスツリーオーバーレイに追加:
 
 ```dts
-/ {
-    // Behavior bindings
-    behaviors {
-        normal_mouse: normal_mouse {
-            compatible = "zmk,behavior-mouse-key-press";
-            #binding-cells = <1>;
-            time-to-max-speed-ms = <300>;
-            acceleration-exponent = <1>;
-        };
-        
-        pressed_mouse: pressed_mouse {
-            compatible = "zmk,behavior-mouse-key-press";
-            #binding-cells = <1>;
-            time-to-max-speed-ms = <150>;
-            acceleration-exponent = <2>;
-        };
-    };
-};
-
 &i2c0 {
+    status = "okay";
+    pinctrl-0 = <&i2c0_default>;
+    pinctrl-1 = <&i2c0_sleep>;
+    pinctrl-names = "default", "sleep";
+    clock-frequency = <100000>;
+    
     mlx90393_input: mlx90393-input@0c {
         compatible = "melexis,mlx90393-input";
-        reg = <0x0C>;
-        
+        reg = <0x0c>;
         polling-interval-ms = <10>;
-        z-press-threshold = <50>;
-        z-hysteresis = <10>;
-        
-        normal-binding = <&normal_mouse MOVE_X>;
-        pressed-binding = <&pressed_mouse MOVE_X>;
-        
-        deadzone-x = <3>;
-        deadzone-y = <3>;
-        deadzone-z = <5>;
-        
-        movement-threshold = <20>;
-        auto-calibration-timeout-s = <30>;
+    };
+};
+
+// I2Cピン設定でプルアップ抵抗を有効化（重要）
+&pinctrl {
+    i2c0_default: i2c0_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 0, 4)>,
+                    <NRF_PSEL(TWIM_SCL, 0, 5)>;
+            bias-pull-up; // 必須: プルアップ抵抗を有効化
+        };
+    };
+    
+    i2c0_sleep: i2c0_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 0, 4)>,
+                    <NRF_PSEL(TWIM_SCL, 0, 5)>;
+            low-power-enable;
+            bias-pull-up; // スリープ時もプルアップ維持
+        };
     };
 };
 ```
 
-## 設定オプション
+## 設定パラメーター
 
-### デバイスツリープロパティ
-
-| プロパティ | デフォルト値 | 説明 |
-|-----------|-------------|------|
+| パラメーター | デフォルト値 | 説明 |
+|------------|------------|------|
 | `polling-interval-ms` | 10 | センサー読み取り間隔（ミリ秒） |
-| `z-press-threshold` | 50 | Z軸押し込み検出閾値 |
-| `z-hysteresis` | 10 | Z軸ヒステリシス値 |
-| `normal-binding` | - | 通常状態のbehavior binding（必須） |
-| `pressed-binding` | - | 押し込み状態のbehavior binding（必須） |
-| `deadzone-x` | 3 | X軸デッドゾーン |
-| `deadzone-y` | 3 | Y軸デッドゾーン |
-| `deadzone-z` | 5 | Z軸デッドゾーン |
-| `movement-threshold` | 20 | 動き検出閾値 |
-| `auto-calibration-timeout-s` | 30 | 自動キャリブレーションタイムアウト（秒） |
+| `reg` | 0x0c | I2Cアドレス（通常変更不要） |
 
-### Kconfigオプション
+## ドライバー動作
 
-| オプション | デフォルト値 | 説明 |
-|-----------|-------------|------|
-| `CONFIG_ZMK_INPUT_MLX90393` | n | ドライバーの有効化 |
-| `CONFIG_ZMK_INPUT_MLX90393_INIT_PRIORITY` | 80 | 初期化優先度 |
-| `CONFIG_ZMK_INPUT_MLX90393_LOG_LEVEL` | 3 | ログレベル (0-4) |
+1. **初期化**: Arduinoで実証済みのレジスタ設定シーケンス実行
+2. **キャリブレーション**: 50サンプル収集でベースライン確立（約5秒）
+3. **動作**: ベースラインからの相対変化をフィルタリングして報告
+4. **感度**: 滑らかな制御のため動きを1/4にスケーリング
 
-## 使用例
+## デバッグ出力
 
-### 基本設定
+ログ出力でリアルタイムセンサーデータを確認:
 
-最小限の設定例：
-
-```dts
-&i2c0 {
-    mlx90393_input: mlx90393-input@0c {
-        compatible = "melexis,mlx90393-input";
-        reg = <0x0C>;
-        normal-binding = <&mkp LCLK>;
-        pressed-binding = <&mkp MCLK>;
-    };
-};
+```
+[INF] input_mlx90393: Initializing MLX90393 at address 0x0C
+[INF] input_mlx90393: First config status: 0x3c
+[INF] input_mlx90393: Second config status: 0x3c
+[INF] input_mlx90393: Calibration 10/50 - Current: X:1234 Y:5678 Z:9012
+[INF] input_mlx90393: *** Calibration COMPLETE! Baseline: X=1234 Y=5678 Z=9012 ***
+[INF] input_mlx90393: Sensor values - Raw: X:1240 Y:5680 Z:9015, Baseline: X:1234 Y:5678 Z:9012, Relative: X:1 Y:0 Z:0
+[INF] input_mlx90393: >>> INPUT GENERATED: X:1 Y:0 Z:0
 ```
 
-### 高詳細設定
+## 実装詳細
 
-カスタマイズされた設定例：
+### Arduino互換I2C通信パターン
 
-```dts
-&i2c0 {
-    mlx90393_input: mlx90393-input@0c {
-        compatible = "melexis,mlx90393-input";
-        reg = <0x0C>;
-        
-        polling-interval-ms = <5>;    // より高い応答性
-        z-press-threshold = <100>;    // より強い押し込み要求
-        z-hysteresis = <20>;          // より安定した状態検出
-        
-        normal-binding = <&custom_normal>;
-        pressed-binding = <&custom_pressed>;
-        
-        deadzone-x = <5>;
-        deadzone-y = <5>;
-        deadzone-z = <8>;
-        
-        movement-threshold = <15>;
-        auto-calibration-timeout-s = <60>;
-    };
-};
+```c
+// Arduino: Wire.beginTransmission() → Wire.write() → Wire.endTransmission()
+static int mlx90393_write(const struct device *dev, uint8_t *data, size_t len) {
+    return i2c_write_dt(&config->i2c, data, len);
+}
+
+// Arduino: Wire.requestFrom() → Wire.read()
+static int mlx90393_read(const struct device *dev, uint8_t *data, size_t len) {
+    return i2c_read_dt(&config->i2c, data, len);
+}
+```
+
+### センサー読み取りサイクル
+
+1. **開始コマンド送信** (0x3E) - 単発測定モード開始
+2. **ステータス読み取り** - 1バイトのステータス確認
+3. **待機** - 100ms待機（Arduino互換）
+4. **読み取りコマンド送信** (0x4E) - 測定データ読み取り要求
+5. **データ読み取り** - 7バイト（ステータス + XYZ磁気データ）
+
+### キャリブレーションとフィルタリング
+
+```c
+// デッドゾーン適用（小さな動きを無視）
+const int16_t deadzone = 5;
+if (abs(rel_x) < deadzone) rel_x = 0;
+
+// 感度調整（動きを1/4に縮小）
+rel_x /= 4;
+rel_y /= 4; 
+rel_z /= 4;
 ```
 
 ## トラブルシューティング
 
-### センサーが検出されない
+### 一般的な問題と解決方法
 
-1. I2Cアドレスを確認（通常0x0C）
-2. I2Cバスの設定を確認
-3. センサーの電源供給を確認
+**I2C NACK エラー (0x0BAE0001)**
+- ✅ pinctrl設定で `bias-pull-up` が有効化されているか確認
+- ✅ I2Cアドレスが正しいか確認（通常は0x0C）
+- ✅ 配線とセンサーの物理的接続を確認
 
-### 状態検出が不安定
+**センサーが応答しない**
+- ✅ デバッグログでI2C初期化メッセージを確認
+- ✅ I2Cバス上でデバイスが検出されるか確認
+- ✅ 電源供給とGND接続を確認
 
-1. `z-hysteresis`値を増加
-2. `deadzone-z`値を調整
-3. `movement-threshold`を調整
+**動きが激しすぎる/かくつく**
+- ✅ ドライバー内のデッドゾーン値を調整（コード内の `deadzone = 5` を増加）
+- ✅ 感度スケーリング値を変更（`/= 4` を `/= 8` に変更等）
+- ✅ キャリブレーション完了を待つ（約5秒間）
 
-### 自動キャリブレーションが動作しない
+**キャリブレーションが完了しない**  
+- ✅ センサーを静止状態に保つ（約5秒間）
+- ✅ デバッグログでキャリブレーション進行状況を確認
+- ✅ センサー読み取り値が安定しているか確認
 
-1. `auto-calibration-timeout-s`を確認
-2. ログレベルを上げてデバッグ情報を確認
-3. センサーが実際に静止していることを確認
+### デバッグ手順
 
-## ログとデバッグ
+1. **I2C通信確認**: 初期化メッセージをログで確認
+2. **設定完了確認**: レジスタ設定のステータス確認  
+3. **キャリブレーション確認**: ベースライン設定完了の確認
+4. **センサー値監視**: リアルタイムの生データと相対値確認
 
-ログレベルを上げることで詳細な情報を取得できます：
+## 技術仕様
 
-```ini
-CONFIG_ZMK_INPUT_MLX90393_LOG_LEVEL=4
-```
-
-ログ出力例：
-```
-[INF] input_mlx90393: MLX90393 input driver initialized
-[DBG] input_mlx90393: State changed to pressed
-[INF] input_mlx90393: Auto-calibration completed: baseline X=1234, Y=5678, Z=9012
-```
+- **ベースライン**: Arduino sample code (ControlEverything.com)
+- **I2C周波数**: 100kHz
+- **I2Cアドレス**: 0x0C (7bit)
+- **データ更新レート**: 設定可能（デフォルト10ms）
+- **分解能**: 16bit signed integer per axis
+- **感度**: 1/4スケーリング適用済み
 
 ## ライセンス
 
