@@ -13,11 +13,16 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 LOG_MODULE_REGISTER(input_mlx90393, CONFIG_ZMK_INPUT_MLX90393_LOG_LEVEL);
 
 // MLX90393 I2C Address is 0x0C (from Arduino sample)
 #define MLX90393_ADDR 0x0C
+
+// Conversion time between start and data-ready (ms).
+// Kept as a fixed value to avoid blocking in the work handler.
+#define MLX90393_CONV_DELAY_MS 100
 
 struct mlx90393_config {
     struct i2c_dt_spec i2c;
@@ -38,10 +43,11 @@ struct mlx90393_data {
     int32_t sum_x;
     int32_t sum_y;
     int32_t sum_z;
+    bool measuring; // two-phase non-blocking state
 };
 
 // Simple I2C write helper based on Arduino Wire.beginTransmission/write/endTransmission
-static int mlx90393_write(const struct device *dev, uint8_t *data, size_t len) {
+static int mlx90393_write(const struct device *dev, const uint8_t *data, size_t len) {
     const struct mlx90393_config *config = dev->config;
     return i2c_write_dt(&config->i2c, data, len);
 }
@@ -63,44 +69,45 @@ static void mlx90393_work_handler(struct k_work *work) {
     int ret;
     int16_t x, y, z;
 
-    // Start single measurement mode, ZYX enabled (Arduino: Wire.write(0x3E))
-    cmd = 0x3E;
-    ret = mlx90393_write(dev, &cmd, 1);
-    if (ret < 0) {
-        LOG_ERR("Failed to start measurement: %d", ret);
-        goto reschedule;
+    // Two-phase non-blocking measurement: start -> delayed read
+    if (!data->measuring) {
+        // Phase 1: Start single measurement mode, ZYX enabled (Arduino: Wire.write(0x3E))
+        cmd = 0x3E;
+        ret = mlx90393_write(dev, &cmd, 1);
+        if (ret < 0) {
+            LOG_ERR("Failed to start measurement: %d", ret);
+            goto reschedule_poll;
+        }
+
+        // Optional: Read status byte (Arduino: Wire.requestFrom(Addr, 1))
+        ret = mlx90393_read(dev, read_data, 1);
+        if (ret < 0) {
+            LOG_WRN("Failed to read start status: %d", ret);
+            // continue anyway; schedule read after conversion time
+        }
+
+        data->measuring = true;
+        k_work_reschedule(&data->work, K_MSEC(MLX90393_CONV_DELAY_MS));
+        return;
     }
-    
-    // Read status byte (Arduino: Wire.requestFrom(Addr, 1))
-    ret = mlx90393_read(dev, read_data, 1);
-    if (ret < 0) {
-        LOG_ERR("Failed to read start status: %d", ret);
-        goto reschedule;
-    }
-    
-    // Wait for measurement (Arduino: delay(100))
-    k_msleep(100);
-    
-    // Send read measurement command (Arduino: Wire.write(0x4E))
+
+    // Phase 2: Read measurement after conversion time
     cmd = 0x4E;
     ret = mlx90393_write(dev, &cmd, 1);
     if (ret < 0) {
         LOG_ERR("Failed to send read command: %d", ret);
-        goto reschedule;
+        goto reschedule_poll;
     }
-    
-    // Read 7 bytes of data (Arduino: Wire.requestFrom(Addr, 7))
-    // status, xMag msb, xMag lsb, yMag msb, yMag lsb, zMag msb, zMag lsb
+    // Read 7 bytes of data (status + XYZ)
     ret = mlx90393_read(dev, read_data, 7);
     if (ret < 0) {
         LOG_ERR("Failed to read measurement data: %d", ret);
-        goto reschedule;
+        goto reschedule_poll;
     }
-    
     // Convert the data (Arduino: int xMag = data[1] * 256 + data[2])
-    x = (int16_t)(read_data[1] * 256 + read_data[2]);
-    y = (int16_t)(read_data[3] * 256 + read_data[4]);
-    z = (int16_t)(read_data[5] * 256 + read_data[6]);
+    x = (int16_t)((uint16_t)read_data[1] << 8 | read_data[2]);
+    y = (int16_t)((uint16_t)read_data[3] << 8 | read_data[4]);
+    z = (int16_t)((uint16_t)read_data[5] << 8 | read_data[6]);
     
     // Auto-calibration: collect baseline for first 50 readings
     if (!data->calibrated) {
@@ -123,7 +130,7 @@ static void mlx90393_work_handler(struct k_work *work) {
             LOG_INF("*** Calibration COMPLETE! Baseline: X=%d Y=%d Z=%d ***", 
                     data->baseline_x, data->baseline_y, data->baseline_z);
         }
-        goto reschedule; // Skip input during calibration
+        goto reschedule_poll; // Skip input during calibration
     }
     
     // Calculate relative movement from baseline
@@ -165,7 +172,8 @@ static void mlx90393_work_handler(struct k_work *work) {
         LOG_INF(">>> INPUT GENERATED: X:%d Y:%d Z:%d", rel_x, rel_y, rel_z);
     }
 
-reschedule:
+reschedule_poll:
+    data->measuring = false;
     k_work_reschedule(&data->work, K_MSEC(config->polling_interval_ms));
 }
 
@@ -240,6 +248,7 @@ static int mlx90393_init(const struct device *dev) {
     data->sum_x = 0;
     data->sum_y = 0;
     data->sum_z = 0;
+    data->measuring = false;
 
     // Initialize work
     k_work_init_delayable(&data->work, mlx90393_work_handler);
