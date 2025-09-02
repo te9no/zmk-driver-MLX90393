@@ -59,3 +59,25 @@ properties:
     type: int
     default: 5
     description: Z-axis deadzone to filter small movements.
+
+  conv-delay-ms:
+    type: int
+    default: 100
+    description: |
+      Conversion delay in milliseconds between start command and read
+      of measurement results.
+
+  scale-x:
+    type: int
+    default: 4
+    description: Divisor applied to relative X after deadzone.
+
+  scale-y:
+    type: int
+    default: 4
+    description: Divisor applied to relative Y after deadzone.
+
+  scale-z:
+    type: int
+    default: 4
+    description: Divisor applied to relative Z after deadzone.

@@ -12,14 +12,15 @@
 #include <zephyr/input/input.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/byteorder.h>
 #include <stdlib.h>
 #include <stdbool.h>
 
 LOG_MODULE_REGISTER(input_mlx90393, CONFIG_ZMK_INPUT_MLX90393_LOG_LEVEL);
 
-// Conversion time between start and data-ready (ms).
-// Kept as a fixed value to avoid blocking in the work handler.
-#define MLX90393_CONV_DELAY_MS 100
+// MLX90393 command codes (per datasheet / Arduino reference)
+#define MLX90393_CMD_START_SINGLE_ZYX 0x3E
+#define MLX90393_CMD_READ_MEAS_ZYX    0x4E
 
 struct mlx90393_config {
     struct i2c_dt_spec i2c;
@@ -29,6 +30,10 @@ struct mlx90393_config {
     uint16_t deadzone_z;
     uint16_t z_press_threshold;
     uint16_t z_hysteresis;
+    uint16_t conv_delay_ms; // conversion delay between start and read
+    uint16_t scale_x;       // scale divisor for X
+    uint16_t scale_y;       // scale divisor for Y
+    uint16_t scale_z;       // scale divisor for Z
 };
 
 struct mlx90393_data {
@@ -72,7 +77,7 @@ static void mlx90393_work_handler(struct k_work *work) {
     // Two-phase non-blocking measurement: start -> delayed read
     if (!data->measuring) {
         // Phase 1: Start single measurement mode, ZYX enabled (Arduino: Wire.write(0x3E))
-        cmd = 0x3E;
+        cmd = MLX90393_CMD_START_SINGLE_ZYX;
         ret = mlx90393_write(dev, &cmd, 1);
         if (ret < 0) {
             LOG_ERR("Failed to start measurement: %d", ret);
@@ -87,12 +92,12 @@ static void mlx90393_work_handler(struct k_work *work) {
         }
 
         data->measuring = true;
-        k_work_reschedule(&data->work, K_MSEC(MLX90393_CONV_DELAY_MS));
+        k_work_reschedule(&data->work, K_MSEC(config->conv_delay_ms));
         return;
     }
 
     // Phase 2: Read measurement after conversion time
-    cmd = 0x4E;
+    cmd = MLX90393_CMD_READ_MEAS_ZYX;
     ret = mlx90393_write(dev, &cmd, 1);
     if (ret < 0) {
         LOG_ERR("Failed to send read command: %d", ret);
@@ -104,10 +109,10 @@ static void mlx90393_work_handler(struct k_work *work) {
         LOG_ERR("Failed to read measurement data: %d", ret);
         goto reschedule_poll;
     }
-    // Convert the data (Arduino: int xMag = data[1] * 256 + data[2])
-    x = (int16_t)((uint16_t)read_data[1] << 8 | read_data[2]);
-    y = (int16_t)((uint16_t)read_data[3] << 8 | read_data[4]);
-    z = (int16_t)((uint16_t)read_data[5] << 8 | read_data[6]);
+    // Convert the data (big endian MSB:LSB for each axis)
+    x = (int16_t)sys_get_be16(&read_data[1]);
+    y = (int16_t)sys_get_be16(&read_data[3]);
+    z = (int16_t)sys_get_be16(&read_data[5]);
     
     // Auto-calibration: collect baseline for first 50 readings
     if (!data->calibrated) {
@@ -144,13 +149,13 @@ static void mlx90393_work_handler(struct k_work *work) {
     if (abs(rel_y) < (int)config->deadzone_y) rel_y = 0;
     if (abs(rel_z) < (int)config->deadzone_z) rel_z = 0;
     
-    // Scale down sensitivity (divide by 4 for gentler movement)
-    rel_x /= 4;
-    rel_y /= 4;
-    rel_z /= 4;
+    // Scale down sensitivity based on DT scale_* divisors
+    if (config->scale_x > 1) { rel_x /= (int)config->scale_x; }
+    if (config->scale_y > 1) { rel_y /= (int)config->scale_y; }
+    if (config->scale_z > 1) { rel_z /= (int)config->scale_z; }
     
-    // Always show sensor values (even at INFO level for debugging)
-    LOG_INF("Sensor values - Raw: X:%d Y:%d Z:%d, Baseline: X:%d Y:%d Z:%d, Relative: X:%d Y:%d Z:%d", 
+    // Detailed per-cycle values as debug to reduce log volume
+    LOG_DBG("Raw: X:%d Y:%d Z:%d | Baseline: X:%d Y:%d Z:%d | Rel: X:%d Y:%d Z:%d", 
             x, y, z, data->baseline_x, data->baseline_y, data->baseline_z, rel_x, rel_y, rel_z);
     
     // Z-press threshold/hysteresis detection (button state)
@@ -287,6 +292,10 @@ static int mlx90393_init(const struct device *dev) {
         .deadzone_z = DT_INST_PROP_OR(n, deadzone_z, 5),                                         \
         .z_press_threshold = DT_INST_PROP_OR(n, z_press_threshold, 50),                           \
         .z_hysteresis = DT_INST_PROP_OR(n, z_hysteresis, 10),                                     \
+        .conv_delay_ms = DT_INST_PROP_OR(n, conv_delay_ms, 100),                                  \
+        .scale_x = DT_INST_PROP_OR(n, scale_x, 4),                                                \
+        .scale_y = DT_INST_PROP_OR(n, scale_y, 4),                                                \
+        .scale_z = DT_INST_PROP_OR(n, scale_z, 4),                                                \
     };                                                                                            \
                                                                                                   \
     static struct mlx90393_data mlx90393_data_##n;                                               \
