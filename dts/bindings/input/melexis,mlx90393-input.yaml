@@ -3,15 +3,18 @@
 description: |
   MLX90393 magnetic sensor input driver
 
-  This driver reads magnetic field data from the MLX90393 sensor via I2C
-  and generates mouse input events. It supports two states based on Z-axis
-  threshold detection and reports relative movement and button press events.
+  Reads magnetic field data from the MLX90393 via I2C and reports
+  relative X/Y/WHEEL events. Z-axis press detection is supported via
+  threshold with hysteresis and reported as a button event.
 
   Example usage:
-    mlx90393_input: mlx90393-input {
+    mlx90393_input: mlx90393-input@0c {
       compatible = "melexis,mlx90393-input";
       reg = <0x0C>;
       polling-interval-ms = <10>;
+      deadzone-x = <3>;
+      deadzone-y = <3>;
+      deadzone-z = <5>;
       z-press-threshold = <50>;
       z-hysteresis = <10>;
     };
@@ -42,7 +45,6 @@ properties:
       Z-axis hysteresis value to prevent state oscillation.
       Press state is released when Z falls below (threshold - hysteresis).
 
-
   deadzone-x:
     type: int
     default: 3
@@ -57,25 +59,3 @@ properties:
     type: int
     default: 5
     description: Z-axis deadzone to filter small movements.
-
-  movement-threshold:
-    type: int
-    default: 20
-    description: |
-      Movement detection threshold for auto-calibration.
-      Movement below this value is considered stationary.
-
-  auto-calibration-timeout-s:
-    type: int
-    default: 30
-    description: |
-      Auto-calibration timeout in seconds.
-      Calibration occurs after this period of no movement.
-
-  bindings:
-    type: phandles
-    required: true
-    description: |
-      List of two behavior bindings: [normal-binding, pressed-binding].
-      First binding is for normal state (Z-axis below threshold).
-      Second binding is for pressed state (Z-axis above threshold).

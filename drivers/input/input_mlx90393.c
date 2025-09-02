@@ -17,9 +17,6 @@
 
 LOG_MODULE_REGISTER(input_mlx90393, CONFIG_ZMK_INPUT_MLX90393_LOG_LEVEL);
 
-// MLX90393 I2C Address is 0x0C (from Arduino sample)
-#define MLX90393_ADDR 0x0C
-
 // Conversion time between start and data-ready (ms).
 // Kept as a fixed value to avoid blocking in the work handler.
 #define MLX90393_CONV_DELAY_MS 100
@@ -30,6 +27,8 @@ struct mlx90393_config {
     uint16_t deadzone_x;
     uint16_t deadzone_y;
     uint16_t deadzone_z;
+    uint16_t z_press_threshold;
+    uint16_t z_hysteresis;
 };
 
 struct mlx90393_data {
@@ -38,15 +37,13 @@ struct mlx90393_data {
     int16_t baseline_x;
     int16_t baseline_y; 
     int16_t baseline_z;
-    int16_t last_x;
-    int16_t last_y;
-    int16_t last_z;
     bool calibrated;
     uint32_t calibration_count;
     int32_t sum_x;
     int32_t sum_y;
     int32_t sum_z;
     bool measuring; // two-phase non-blocking state
+    bool pressed;   // Z-press detected state
 };
 
 // Simple I2C write helper based on Arduino Wire.beginTransmission/write/endTransmission
@@ -140,6 +137,7 @@ static void mlx90393_work_handler(struct k_work *work) {
     int16_t rel_x = x - data->baseline_x;
     int16_t rel_y = y - data->baseline_y;
     int16_t rel_z = z - data->baseline_z;
+    int16_t rel_z_raw = rel_z; // preserve for press detection before scaling
     
     // Apply deadzone from DT (ignore small movements)
     if (abs(rel_x) < (int)config->deadzone_x) rel_x = 0;
@@ -155,6 +153,26 @@ static void mlx90393_work_handler(struct k_work *work) {
     LOG_INF("Sensor values - Raw: X:%d Y:%d Z:%d, Baseline: X:%d Y:%d Z:%d, Relative: X:%d Y:%d Z:%d", 
             x, y, z, data->baseline_x, data->baseline_y, data->baseline_z, rel_x, rel_y, rel_z);
     
+    // Z-press threshold/hysteresis detection (button state)
+    bool prev_pressed = data->pressed;
+    int zmag = abs(rel_z_raw);
+    if (!data->pressed) {
+        if (zmag >= (int)config->z_press_threshold) {
+            data->pressed = true;
+        }
+    } else {
+        if (zmag <= (int)config->z_press_threshold - (int)config->z_hysteresis) {
+            data->pressed = false;
+        }
+    }
+
+    if (data->pressed != prev_pressed) {
+        input_report_key(dev, INPUT_BTN_MIDDLE, data->pressed ? 1 : 0, true, K_FOREVER);
+        LOG_INF("Button %s (rel_z_raw=%d, thr=%u, hyst=%u)",
+                data->pressed ? "DOWN" : "UP", rel_z_raw,
+                config->z_press_threshold, config->z_hysteresis);
+    }
+
     // Generate input events only if there's actual movement
     bool movement_detected = false;
     if (rel_x != 0) {
@@ -242,15 +260,13 @@ static int mlx90393_init(const struct device *dev) {
     data->baseline_x = 0;
     data->baseline_y = 0;
     data->baseline_z = 0;
-    data->last_x = 0;
-    data->last_y = 0;
-    data->last_z = 0;
     data->calibrated = false;
     data->calibration_count = 0;
     data->sum_x = 0;
     data->sum_y = 0;
     data->sum_z = 0;
     data->measuring = false;
+    data->pressed = false;
 
     // Initialize work
     k_work_init_delayable(&data->work, mlx90393_work_handler);
@@ -269,6 +285,8 @@ static int mlx90393_init(const struct device *dev) {
         .deadzone_x = DT_INST_PROP_OR(n, deadzone_x, 3),                                         \
         .deadzone_y = DT_INST_PROP_OR(n, deadzone_y, 3),                                         \
         .deadzone_z = DT_INST_PROP_OR(n, deadzone_z, 5),                                         \
+        .z_press_threshold = DT_INST_PROP_OR(n, z_press_threshold, 50),                           \
+        .z_hysteresis = DT_INST_PROP_OR(n, z_hysteresis, 10),                                     \
     };                                                                                            \
                                                                                                   \
     static struct mlx90393_data mlx90393_data_##n;                                               \
