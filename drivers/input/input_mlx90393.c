@@ -27,6 +27,9 @@ LOG_MODULE_REGISTER(input_mlx90393, CONFIG_ZMK_INPUT_MLX90393_LOG_LEVEL);
 struct mlx90393_config {
     struct i2c_dt_spec i2c;
     uint32_t polling_interval_ms;
+    uint16_t deadzone_x;
+    uint16_t deadzone_y;
+    uint16_t deadzone_z;
 };
 
 struct mlx90393_data {
@@ -138,11 +141,10 @@ static void mlx90393_work_handler(struct k_work *work) {
     int16_t rel_y = y - data->baseline_y;
     int16_t rel_z = z - data->baseline_z;
     
-    // Apply deadzone (ignore small movements)
-    const int16_t deadzone = 5;
-    if (abs(rel_x) < deadzone) rel_x = 0;
-    if (abs(rel_y) < deadzone) rel_y = 0;
-    if (abs(rel_z) < deadzone) rel_z = 0;
+    // Apply deadzone from DT (ignore small movements)
+    if (abs(rel_x) < (int)config->deadzone_x) rel_x = 0;
+    if (abs(rel_y) < (int)config->deadzone_y) rel_y = 0;
+    if (abs(rel_z) < (int)config->deadzone_z) rel_z = 0;
     
     // Scale down sensitivity (divide by 4 for gentler movement)
     rel_x /= 4;
@@ -264,6 +266,9 @@ static int mlx90393_init(const struct device *dev) {
     static const struct mlx90393_config mlx90393_config_##n = {                                  \
         .i2c = I2C_DT_SPEC_INST_GET(n),                                                          \
         .polling_interval_ms = DT_INST_PROP_OR(n, polling_interval_ms, 10),                      \
+        .deadzone_x = DT_INST_PROP_OR(n, deadzone_x, 3),                                         \
+        .deadzone_y = DT_INST_PROP_OR(n, deadzone_y, 3),                                         \
+        .deadzone_z = DT_INST_PROP_OR(n, deadzone_z, 5),                                         \
     };                                                                                            \
                                                                                                   \
     static struct mlx90393_data mlx90393_data_##n;                                               \
