@@ -81,3 +81,54 @@ properties:
     type: int
     default: 4
     description: Divisor applied to relative Z after deadzone.
+
+  disable-wheel:
+    type: boolean
+    description: |
+      When present, disables reporting of REL_WHEEL from Z-axis movement.
+      Z-press detection remains active.
+
+  disable-press:
+    type: boolean
+    description: |
+      When present, disables reporting of BTN_MIDDLE based on Z-axis
+      press threshold/hysteresis. Use this to avoid host-side auto-scroll
+      that some OSs trigger on middle-button hold.
+
+  x-hysteresis:
+    type: int
+    default: 0
+    description: |
+      X-axis hysteresis width for Schmitt gating around the deadzone.
+      Active when value rises above deadzone; deactivates only when it
+      falls below (deadzone - x-hysteresis). Set 0 to disable.
+
+  y-hysteresis:
+    type: int
+    default: 0
+    description: |
+      Y-axis hysteresis width for Schmitt gating around the deadzone.
+      Active when value rises above deadzone; deactivates only when it
+      falls below (deadzone - y-hysteresis). Set 0 to disable.
+
+  report-threshold-x:
+    type: int
+    default: 1
+    description: |
+      Minimum absolute X value (after deadzone, hysteresis, scaling)
+      required to report a movement. Values below are suppressed.
+
+  report-threshold-y:
+    type: int
+    default: 1
+    description: |
+      Minimum absolute Y value (after deadzone, hysteresis, scaling)
+      required to report a movement. Values below are suppressed.
+
+  middle-hold-release-ms:
+    type: int
+    default: 200
+    description: |
+      When non-pressed XY movement is detected, the driver will press and hold
+      the middle mouse button, and release it after this many milliseconds of
+      inactivity. Set to 0 to disable auto-hold behavior.

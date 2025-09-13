@@ -13,6 +13,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
+#include <zmk/hid.h>
 #include <stdlib.h>
 #include <stdbool.h>
 
@@ -34,6 +35,13 @@ struct mlx90393_config {
     uint16_t scale_x;       // scale divisor for X
     uint16_t scale_y;       // scale divisor for Y
     uint16_t scale_z;       // scale divisor for Z
+    uint16_t x_hysteresis;  // hysteresis width around X deadzone
+    uint16_t y_hysteresis;  // hysteresis width around Y deadzone
+    bool disable_wheel;     // if true, do not report REL_WHEEL from Z
+    uint16_t report_threshold_x; // min |X| to report after processing
+    uint16_t report_threshold_y; // min |Y| to report after processing
+    bool disable_press;     // if true, do not report BTN_MIDDLE
+    uint16_t middle_hold_release_ms; // inactivity timeout for auto middle hold
 };
 
 struct mlx90393_data {
@@ -49,7 +57,25 @@ struct mlx90393_data {
     int32_t sum_z;
     bool measuring; // two-phase non-blocking state
     bool pressed;   // Z-press detected state
+    bool x_active;  // XY Schmitt gating state
+    bool y_active;
+    bool auto_middle_active; // auto-hold middle when moving without press
+    struct k_work_delayable middle_release_work;
 };
+
+static void mlx90393_middle_release_work(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct mlx90393_data *data = CONTAINER_OF(dwork, struct mlx90393_data, middle_release_work);
+    const struct device *dev = data->dev;
+    const struct mlx90393_config *config = dev->config;
+    if (data->auto_middle_active && !data->pressed) {
+        if (!config->disable_press) {
+            input_report_key(dev, INPUT_BTN_2, 0, true, K_FOREVER);
+        }
+        data->auto_middle_active = false;
+        LOG_DBG("Auto middle released after inactivity");
+    }
+}
 
 // Simple I2C write helper based on Arduino Wire.beginTransmission/write/endTransmission
 static int mlx90393_write(const struct device *dev, const uint8_t *data, size_t len) {
@@ -144,9 +170,37 @@ static void mlx90393_work_handler(struct k_work *work) {
     int16_t rel_z = z - data->baseline_z;
     int16_t rel_z_raw = rel_z; // preserve for press detection before scaling
     
-    // Apply deadzone from DT (ignore small movements)
-    if (abs(rel_x) < (int)config->deadzone_x) rel_x = 0;
-    if (abs(rel_y) < (int)config->deadzone_y) rel_y = 0;
+    // Apply XY Schmitt gating with hysteresis around deadzone
+    int absx = abs(rel_x);
+    int absy = abs(rel_y);
+    int off_thr_x = (int)config->deadzone_x - (int)config->x_hysteresis;
+    int off_thr_y = (int)config->deadzone_y - (int)config->y_hysteresis;
+    if (off_thr_x < 0) off_thr_x = 0;
+    if (off_thr_y < 0) off_thr_y = 0;
+
+    if (!data->x_active) {
+        if (absx >= (int)config->deadzone_x) {
+            data->x_active = true;
+        }
+    } else {
+        if (absx <= off_thr_x) {
+            data->x_active = false;
+        }
+    }
+
+    if (!data->y_active) {
+        if (absy >= (int)config->deadzone_y) {
+            data->y_active = true;
+        }
+    } else {
+        if (absy <= off_thr_y) {
+            data->y_active = false;
+        }
+    }
+
+    if (!data->x_active) rel_x = 0;
+    if (!data->y_active) rel_y = 0;
+    // Keep Z simple deadzone
     if (abs(rel_z) < (int)config->deadzone_z) rel_z = 0;
     
     // Scale down sensitivity based on DT scale_* divisors
@@ -154,6 +208,10 @@ static void mlx90393_work_handler(struct k_work *work) {
     if (config->scale_y > 1) { rel_y /= (int)config->scale_y; }
     if (config->scale_z > 1) { rel_z /= (int)config->scale_z; }
     
+    // Apply per-axis minimal report threshold after scaling
+    if (abs(rel_x) < (int)config->report_threshold_x) rel_x = 0;
+    if (abs(rel_y) < (int)config->report_threshold_y) rel_y = 0;
+
     // Detailed per-cycle values as debug to reduce log volume
     LOG_DBG("Raw: X:%d Y:%d Z:%d | Baseline: X:%d Y:%d Z:%d | Rel: X:%d Y:%d Z:%d", 
             x, y, z, data->baseline_x, data->baseline_y, data->baseline_z, rel_x, rel_y, rel_z);
@@ -172,10 +230,20 @@ static void mlx90393_work_handler(struct k_work *work) {
     }
 
     if (data->pressed != prev_pressed) {
-        input_report_key(dev, INPUT_BTN_MIDDLE, data->pressed ? 1 : 0, true, K_FOREVER);
-        LOG_INF("Button %s (rel_z_raw=%d, thr=%u, hyst=%u)",
+        if (!config->disable_press) {
+            input_report_key(dev, INPUT_BTN_2, data->pressed ? 1 : 0, true, K_FOREVER);
+        }
+        // Also toggle Left Shift modifier at the HID level
+        if (data->pressed) {
+            zmk_hid_register_mod(MOD_LSFT);
+        } else {
+            zmk_hid_unregister_mod(MOD_LSFT);
+        }
+        LOG_INF("Button %s (rel_z_raw=%d, thr=%u, hyst=%u)%s — Shift %s",
                 data->pressed ? "DOWN" : "UP", rel_z_raw,
-                config->z_press_threshold, config->z_hysteresis);
+                config->z_press_threshold, config->z_hysteresis,
+                config->disable_press ? " [middle-suppressed]" : "",
+                data->pressed ? "ON" : "OFF");
     }
 
     // Generate input events only if there's actual movement
@@ -188,11 +256,24 @@ static void mlx90393_work_handler(struct k_work *work) {
         input_report_rel(dev, INPUT_REL_Y, rel_y, true, K_FOREVER);
         movement_detected = true;
     }
-    if (rel_z != 0) {
+    if (!config->disable_wheel && rel_z != 0) {
         input_report_rel(dev, INPUT_REL_WHEEL, rel_z, true, K_FOREVER);
+        LOG_INF("### REL_WHEEL reported from Z: %d", rel_z);
         movement_detected = true;
     }
     
+    // Auto-hold middle button when XY movement occurs without Z press
+    if ((rel_x != 0 || rel_y != 0) && !data->pressed && config->middle_hold_release_ms > 0) {
+        if (!data->auto_middle_active) {
+            if (!config->disable_press) {
+                input_report_key(dev, INPUT_BTN_2, 1, true, K_FOREVER);
+            }
+            data->auto_middle_active = true;
+            LOG_DBG("Auto middle engaged on XY movement");
+        }
+        k_work_reschedule(&data->middle_release_work, K_MSEC(config->middle_hold_release_ms));
+    }
+
     if (movement_detected) {
         LOG_INF(">>> INPUT GENERATED: X:%d Y:%d Z:%d", rel_x, rel_y, rel_z);
     }
@@ -215,6 +296,9 @@ static int mlx90393_init(const struct device *dev) {
     }
 
     LOG_INF("Initializing MLX90393 at address 0x%02X", config->i2c.addr);
+    LOG_INF("Config: disable_wheel=%d disable_press=%d rpt_thr(x,y)=(%u,%u)",
+            config->disable_wheel, config->disable_press,
+            config->report_threshold_x, config->report_threshold_y);
 
     // Arduino initialization sequence
     // First register write: Wire.write(0x60); Wire.write(0x00); Wire.write(0x5C); Wire.write(0x00);
@@ -272,9 +356,13 @@ static int mlx90393_init(const struct device *dev) {
     data->sum_z = 0;
     data->measuring = false;
     data->pressed = false;
+    data->x_active = false;
+    data->y_active = false;
+    data->auto_middle_active = false;
 
     // Initialize work
     k_work_init_delayable(&data->work, mlx90393_work_handler);
+    k_work_init_delayable(&data->middle_release_work, mlx90393_middle_release_work);
 
     // Start periodic reading
     k_work_schedule(&data->work, K_MSEC(config->polling_interval_ms));
@@ -296,6 +384,13 @@ static int mlx90393_init(const struct device *dev) {
         .scale_x = DT_INST_PROP_OR(n, scale_x, 4),                                                \
         .scale_y = DT_INST_PROP_OR(n, scale_y, 4),                                                \
         .scale_z = DT_INST_PROP_OR(n, scale_z, 4),                                                \
+        .x_hysteresis = DT_INST_PROP_OR(n, x_hysteresis, 0),                                      \
+        .y_hysteresis = DT_INST_PROP_OR(n, y_hysteresis, 0),                                      \
+        .disable_wheel = DT_PROP(DT_DRV_INST(n), disable_wheel),                                 \
+        .report_threshold_x = DT_INST_PROP_OR(n, report_threshold_x, 1),                          \
+        .report_threshold_y = DT_INST_PROP_OR(n, report_threshold_y, 1),                          \
+        .disable_press = DT_PROP(DT_DRV_INST(n), disable_press),                                  \
+        .middle_hold_release_ms = DT_INST_PROP_OR(n, middle_hold_release_ms, 200),                \
     };                                                                                            \
                                                                                                   \
     static struct mlx90393_data mlx90393_data_##n;                                               \
