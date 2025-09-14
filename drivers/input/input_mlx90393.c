@@ -14,6 +14,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
 #include <zmk/hid.h>
+#include <zmk/endpoints.h>
 #include <stdlib.h>
 #include <stdbool.h>
 
@@ -233,12 +234,14 @@ static void mlx90393_work_handler(struct k_work *work) {
         if (!config->disable_press) {
             input_report_key(dev, INPUT_BTN_2, data->pressed ? 1 : 0, true, K_FOREVER);
         }
-        // Also toggle Left Shift modifier at the HID level
+        // Toggle Left Shift modifier at the HID level and send report immediately
         if (data->pressed) {
             zmk_hid_register_mod(MOD_LSFT);
         } else {
             zmk_hid_unregister_mod(MOD_LSFT);
         }
+        zmk_endpoints_send_report(HID_USAGE_KEY);
+
         LOG_INF("Button %s (rel_z_raw=%d, thr=%u, hyst=%u)%s — Shift %s",
                 data->pressed ? "DOWN" : "UP", rel_z_raw,
                 config->z_press_threshold, config->z_hysteresis,
