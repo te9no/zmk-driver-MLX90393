@@ -234,11 +234,11 @@ static void mlx90393_work_handler(struct k_work *work) {
         if (!config->disable_press) {
             input_report_key(dev, INPUT_BTN_2, data->pressed ? 1 : 0, true, K_FOREVER);
         }
-        // Toggle Left Shift modifier at the HID level and send report immediately
+        // Toggle Left Shift via HID usage (avoid bitmask->index confusion)
         if (data->pressed) {
-            zmk_hid_register_mod(MOD_LSFT);
+            zmk_hid_press(ZMK_HID_USAGE(HID_USAGE_KEY, HID_USAGE_KEY_KEYBOARD_LEFTSHIFT));
         } else {
-            zmk_hid_unregister_mod(MOD_LSFT);
+            zmk_hid_release(ZMK_HID_USAGE(HID_USAGE_KEY, HID_USAGE_KEY_KEYBOARD_LEFTSHIFT));
         }
         zmk_endpoints_send_report(HID_USAGE_KEY);
 
