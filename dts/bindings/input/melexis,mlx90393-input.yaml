@@ -132,3 +132,12 @@ properties:
       When non-pressed XY movement is detected, the driver will press and hold
       the middle mouse button, and release it after this many milliseconds of
       inactivity. Set to 0 to disable auto-hold behavior.
+
+  movement-grace-delay-ms:
+    type: int
+    default: 200
+    description: |
+      Grace period after first XY movement before deciding interaction mode.
+      If Z press is detected within this window, operate in "press mode"
+      (middle + Shift) and do not auto-hold middle from movement. If no Z press
+      occurs by the time this delay elapses, engage auto-hold middle (if enabled).

@@ -43,6 +43,7 @@ struct mlx90393_config {
     uint16_t report_threshold_y; // min |Y| to report after processing
     bool disable_press;     // if true, do not report BTN_MIDDLE
     uint16_t middle_hold_release_ms; // inactivity timeout for auto middle hold
+    uint16_t movement_grace_delay_ms; // delay before deciding auto-hold vs press mode
 };
 
 struct mlx90393_data {
@@ -62,6 +63,8 @@ struct mlx90393_data {
     bool y_active;
     bool auto_middle_active; // auto-hold middle when moving without press
     struct k_work_delayable middle_release_work;
+    bool grace_active; // waiting for Z press after initial movement
+    struct k_work_delayable movement_grace_work;
 };
 
 static void mlx90393_middle_release_work(struct k_work *work) {
@@ -76,6 +79,25 @@ static void mlx90393_middle_release_work(struct k_work *work) {
         data->auto_middle_active = false;
         LOG_DBG("Auto middle released after inactivity");
     }
+}
+
+static void mlx90393_movement_grace_work(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    struct mlx90393_data *data = CONTAINER_OF(dwork, struct mlx90393_data, movement_grace_work);
+    const struct device *dev = data->dev;
+    const struct mlx90393_config *config = dev->config;
+
+    if (!data->grace_active) {
+        return;
+    }
+
+    if (!data->pressed && config->middle_hold_release_ms > 0 && !data->auto_middle_active &&
+        !config->disable_press) {
+        input_report_key(dev, INPUT_BTN_2, 1, true, K_FOREVER);
+        data->auto_middle_active = true;
+        LOG_DBG("Grace elapsed; auto middle engaged");
+    }
+    data->grace_active = false;
 }
 
 // Simple I2C write helper based on Arduino Wire.beginTransmission/write/endTransmission
@@ -265,16 +287,24 @@ static void mlx90393_work_handler(struct k_work *work) {
         movement_detected = true;
     }
     
-    // Auto-hold middle button when XY movement occurs without Z press
-    if ((rel_x != 0 || rel_y != 0) && !data->pressed && config->middle_hold_release_ms > 0) {
-        if (!data->auto_middle_active) {
-            if (!config->disable_press) {
-                input_report_key(dev, INPUT_BTN_2, 1, true, K_FOREVER);
+    // Auto-hold middle button logic with optional movement grace window
+    if ((rel_x != 0 || rel_y != 0) && !data->pressed) {
+        if (config->movement_grace_delay_ms > 0) {
+            if (!data->grace_active && !data->auto_middle_active) {
+                data->grace_active = true;
+                k_work_reschedule(&data->movement_grace_work, K_MSEC(config->movement_grace_delay_ms));
+                LOG_DBG("Movement detected; starting grace timer (%ums)", config->movement_grace_delay_ms);
             }
-            data->auto_middle_active = true;
-            LOG_DBG("Auto middle engaged on XY movement");
+        } else if (config->middle_hold_release_ms > 0) {
+            if (!data->auto_middle_active && !config->disable_press) {
+                input_report_key(dev, INPUT_BTN_2, 1, true, K_FOREVER);
+                data->auto_middle_active = true;
+                LOG_DBG("Auto middle engaged (no grace)");
+            }
         }
-        k_work_reschedule(&data->middle_release_work, K_MSEC(config->middle_hold_release_ms));
+        if (data->auto_middle_active) {
+            k_work_reschedule(&data->middle_release_work, K_MSEC(config->middle_hold_release_ms));
+        }
     }
 
     if (movement_detected) {
@@ -299,9 +329,10 @@ static int mlx90393_init(const struct device *dev) {
     }
 
     LOG_INF("Initializing MLX90393 at address 0x%02X", config->i2c.addr);
-    LOG_INF("Config: disable_wheel=%d disable_press=%d rpt_thr(x,y)=(%u,%u)",
+    LOG_INF("Config: disable_wheel=%d disable_press=%d rpt_thr(x,y)=(%u,%u) grace=%ums",
             config->disable_wheel, config->disable_press,
-            config->report_threshold_x, config->report_threshold_y);
+            config->report_threshold_x, config->report_threshold_y,
+            config->movement_grace_delay_ms);
 
     // Arduino initialization sequence
     // First register write: Wire.write(0x60); Wire.write(0x00); Wire.write(0x5C); Wire.write(0x00);
@@ -362,10 +393,12 @@ static int mlx90393_init(const struct device *dev) {
     data->x_active = false;
     data->y_active = false;
     data->auto_middle_active = false;
+    data->grace_active = false;
 
     // Initialize work
     k_work_init_delayable(&data->work, mlx90393_work_handler);
     k_work_init_delayable(&data->middle_release_work, mlx90393_middle_release_work);
+    k_work_init_delayable(&data->movement_grace_work, mlx90393_movement_grace_work);
 
     // Start periodic reading
     k_work_schedule(&data->work, K_MSEC(config->polling_interval_ms));
