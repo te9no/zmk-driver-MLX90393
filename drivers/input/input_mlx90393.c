@@ -256,6 +256,9 @@ static void mlx90393_work_handler(struct k_work *work) {
         if (!config->disable_press) {
             input_report_key(dev, INPUT_BTN_2, data->pressed ? 1 : 0, true, K_FOREVER);
         }
+        // For split peripherals, avoid direct HID injection to prevent undefined refs
+        // Only the central side sends keyboard reports.
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
         // Toggle Left Shift via HID usage (avoid bitmask->index confusion)
         if (data->pressed) {
             zmk_hid_press(ZMK_HID_USAGE(HID_USAGE_KEY, HID_USAGE_KEY_KEYBOARD_LEFTSHIFT));
@@ -263,6 +266,7 @@ static void mlx90393_work_handler(struct k_work *work) {
             zmk_hid_release(ZMK_HID_USAGE(HID_USAGE_KEY, HID_USAGE_KEY_KEYBOARD_LEFTSHIFT));
         }
         zmk_endpoints_send_report(HID_USAGE_KEY);
+#endif
 
         LOG_INF("Button %s (rel_z_raw=%d, thr=%u, hyst=%u)%s — Shift %s",
                 data->pressed ? "DOWN" : "UP", rel_z_raw,
